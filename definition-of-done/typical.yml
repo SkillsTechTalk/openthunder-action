@@ -1,16 +1,34 @@
-# The typical Definition of Done (OpenThunder for GitHub).
-# Used only when your repository has no .openthunder/done.yml on its base branch.
-# To change it, copy this file to .openthunder/done.yml, adjust it, and merge it.
+# Definition of Done: what every change must show before it is done.
+# Read from your base branch, so a change cannot edit the rules that judge it.
+# Required items must be met (or carry an approved exception). Recommended items are shown
+# but never hold a change. To turn an option on, remove the "# " in front of it.
+# Thresholds are examples: pick your own.
 version: 1
-trust: any
-approvers: []               # who may approve an exception (GitHub usernames)
+trust: any                  # "ci" = only evidence signed by your CI's key counts
+approvers: []               # who may approve an exception, for example [your-github-username]
+
+# Always part of it, without listing them: nothing blocks the change, and nothing the Check
+# flagged is still waiting for a person.
 require:
   - check: openthunder.tests-not-weakened    # no test was changed to prove less
   - check: openthunder.no-security-findings  # no security finding on the changed lines
-  - check: openthunder.contracts-intact      # nothing still calls what this change removed
+  - check: openthunder.contracts-intact      # nothing still calls what this change removed or renamed
   - check: openthunder.person-approval       # a person approves changes to security-sensitive files
+  # - check: openthunder.impacted-tests      # the tests related to the change ran and passed (run with --run-tests)
+  # - coverage: { min: 80, of: changed }     # changed lines covered, from your coverage report (lcov)
+  # - tests                                  # your test report (JUnit): the tests ran and passed for this exact code
+  # - security: { failOn: error }            # your scanner report (SARIF): no error-level finding on the changed files
+
 recommend:
   - check: openthunder.new-code-has-tests    # changed code comes with tests
-  - check: openthunder.impacted-tests        # the related tests ran and passed (needs run-impacted-tests: true)
-  - coverage: { min: 80, of: changed }       # needs a coverage report (lcov) in the workspace
   - check: openthunder.ai-behavior-evaluated # prompt, model, or tool changes are covered by an eval
+  # - check: openthunder.test-sensitivity    # the tests notice the change (revert it and they fail)
+  # - check: openthunder.repo-coverage       # the whole codebase stays covered (from your coverage report)
+  # - check: openthunder.egress              # data left this machine only for approved AI services
+
+# An accepted risk: a named person and an end date. The evidence underneath stays visible.
+# exceptions:
+#   - requirement: coverage
+#     reason: "Legacy module; tests land in the follow-up"
+#     approver: your-github-username
+#     expires: 2026-12-31

@@ -61,28 +61,29 @@ gets this typical one:
 | Recommended (shown, never holds a change) | |
 |---|---|
 | Changed code has tests | Source changed with a test changed alongside |
-| Impacted tests ran and passed | Required instead when `run-impacted-tests: true` |
-| Changed lines covered (at least 80%) | Needs a coverage report (lcov) from your test step |
 | AI behavior change evaluated | Prompt, model, or tool changes are covered by an eval |
+
+With `run-impacted-tests: true`, **Impacted tests ran and passed** is required too.
 
 **Make it yours:** add `.openthunder/done.yml` to your default branch. It replaces the typical one,
 and it is read from the base branch, so a pull request cannot change the rules that judge it.
-Start from this:
+Start from [the default](definition-of-done/typical.yml): every other option is already written
+out, commented, with one line on what it does. Remove the `# ` in front of a line to turn it on:
 
 ```yaml
-version: 1
-approvers: [your-github-username]   # who may approve an exception
 require:
-  - check: openthunder.impacted-tests        # with run-impacted-tests: true
-  - check: openthunder.tests-not-weakened
-  - check: openthunder.no-security-findings
-  - check: openthunder.contracts-intact
-  - check: openthunder.person-approval
-  - coverage: { min: 80, of: changed }       # needs an lcov report in the workspace
-recommend:
-  - check: openthunder.new-code-has-tests
-  - check: openthunder.ai-behavior-evaluated
+  - check: openthunder.tests-not-weakened    # no test was changed to prove less
+  - check: openthunder.no-security-findings  # no security finding on the changed lines
+  - check: openthunder.contracts-intact      # nothing still calls what this change removed or renamed
+  - check: openthunder.person-approval       # a person approves changes to security-sensitive files
+  # - check: openthunder.impacted-tests      # the tests related to the change ran and passed (run with --run-tests)
+  # - coverage: { min: 80, of: changed }     # changed lines covered, from your coverage report (lcov)
+  # - tests                                  # your test report (JUnit): the tests ran and passed for this exact code
+  # - security: { failOn: error }            # your scanner report (SARIF): no error-level finding on the changed files
 ```
+
+The same default is what `openthunder done init` and the OpenThunder VS Code extension's
+**Create Definition of Done** write.
 
 An accepted risk is an exception with a person and an end date; the evidence underneath stays visible:
 
