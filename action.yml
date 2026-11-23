@@ -1,0 +1,430 @@
+name: 'OpenThunder for GitHub'
+description: 'One answer for every pull request: Ready to merge, Needs review, or Blocked, with the reason, the next step, and the fix list. Keyless.'
+author: 'Skills Tech Talk, LLC'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  base:
+    description: 'Base ref for new-code detection. Defaults to the PR base branch, or main.'
+    required: false
+    default: ''
+  mode:
+    description: 'review-pr (the PR diff) or scan (the whole repo).'
+    required: false
+    default: 'review-pr'
+  output:
+    description: 'Path to write the SARIF file.'
+    required: false
+    default: 'openthunder.sarif'
+  cli-version:
+    description: 'npm version of @skillstech/openthunder to run.'
+    required: false
+    default: 'latest'
+  local-cli:
+    description: >-
+      Path to a built OpenThunder CLI entry to run instead of installing from npm. Leave empty.
+    required: false
+    default: ''
+  upload:
+    description: 'Upload the SARIF to GitHub code scanning (needs security-events: write).'
+    required: false
+    default: 'true'
+  working-directory:
+    description: 'Repository path to analyze.'
+    required: false
+    default: '.'
+  pr-comment:
+    description: 'On a pull_request, post the change-scoped Change Pack (what this change touches + can-i-ship) as an idempotent PR comment.'
+    required: false
+    default: 'true'
+  fail-on-hold:
+    description: 'Fail the check when the Change Pack verdict is HOLD (drift from approved intent / removed capability). Off by default (advisory).'
+    required: false
+    default: 'false'
+  require-verified-change:
+    description: >-
+      Run the Verified AI Change gate (openthunder verify-change: trust-gated tests + differential
+      security gate + verdict + policy approvals, recorded as signed evidence) and FAIL the check
+      unless the change is ship-eligible , a real merge-blocking gate. Off by default for
+      back-compat; RECOMMENDED ON for repos where AI changes must carry proof before merge.
+      Turning it on consents to running the repo''s standard planned test command in CI
+      (a trust-gated local process with a secret-scrubbed env, not an isolated sandbox).
+    required: false
+    default: 'false'
+
+  gate:
+    description: >-
+      Merge gate from the OpenThunder Check (one answer: Ready to merge / Needs review / Blocked).
+      report (default): comment only, never fails. block: fail the check when the answer is Blocked.
+      require-ready: fail unless the answer is Ready to merge. Make this check required in branch
+      protection to enforce it. Start with report to see what it would do.
+    required: false
+    default: 'report'
+  run-impacted-tests:
+    description: >-
+      Run the impacted tests inside the Check (only the test files related to the changed code; the
+      full suite never runs when nothing relates). Executed evidence: a failure makes the answer
+      Blocked. Turning it on consents to running the repo's test toolchain in CI as a trust-gated
+      local process with a secret-scrubbed env (not an isolated sandbox). Off by default.
+    required: false
+    default: 'false'
+  test-sensitivity:
+    description: >-
+      After a passing impacted-test run, revert each changed hunk one at a time, re-run its tests,
+      and list the changes no test notices (they stay "Needs a look", never Blocked). Needs
+      run-impacted-tests. Costs one test run per hunk (capped). Off by default.
+    required: false
+    default: 'false'
+  see-it-run:
+    description: >-
+      Run the app on the base branch and on the PR, send both the same requests to the routes the change
+      affects, and report what actually changed (status, response fields, screens). Executed evidence for
+      "tests passed but it is still wrong": a failure the base did not have makes the answer Blocked; a lost
+      field or a changed status needs a look. GET/HEAD only. The start command comes from the base branch
+      (.openthunder/run.json, or an honest detection from package.json); anything that could not run is
+      "not checked". Consents to running the repo's start command in CI as a trust-gated local process.
+      Off by default.
+    required: false
+    default: 'false'
+  org-rules:
+    description: 'Pull your org Rules from OpenThunder Cloud before checking (needs openthunder-token). The PR cannot override them.'
+    required: false
+    default: 'false'
+  share-proof:
+    description: 'Add a proof link to the PR comment (needs openthunder-token). No source code is shared.'
+    required: false
+    default: 'false'
+  openthunder-token:
+    description: 'OpenThunder Cloud API token (pass a secret, e.g. secrets.OPENTHUNDER_TOKEN). Only needed for org-rules and share-proof.'
+    required: false
+    default: ''
+  cloud-url:
+    description: 'OpenThunder Cloud API URL (self-hosted). Defaults to https://api.openthunder.ai.'
+    required: false
+    default: ''
+
+outputs:
+  check:
+    description: 'The OpenThunder Check answer: ready, review, or blocked (empty on CLI versions without pr-check).'
+    value: ${{ steps.gate.outputs.check }}
+  fix-list:
+    description: 'Path to the fix list JSON (openthunder-fix-list-v1: items with file:line, what must be true, the proving command, plus this PR''s rounds). Empty on CLI versions without it.'
+    value: ${{ steps.gate.outputs.fix-list }}
+  rounds:
+    description: 'How many rounds (checked commits) this PR has been through, counted from the PR comment. Empty on CLI versions without the fix list.'
+    value: ${{ steps.gate.outputs.rounds }}
+  sarif:
+    description: 'Path to the generated SARIF file.'
+    value: ${{ inputs.output }}
+  verdict:
+    description: 'The six-state ship verdict (verified / partially_verified / insufficient_evidence / blocked / high_residual_risk / not_applicable).'
+    value: ${{ steps.verdict.outputs.verdict }}
+  residual-risk:
+    description: 'Residual risk 0-100.'
+    value: ${{ steps.verdict.outputs.residual }}
+  ship-eligible:
+    description: 'true/false from the Verified AI Change gate (only set when require-verified-change is true).'
+    value: ${{ steps.verified-change.outputs.ship-eligible }}
+
+runs:
+  using: composite
+  steps:
+    # Inputs reach scripts only through env: (never pasted into run:), so an input cannot become shell code.
+    # One core engine, thin adapter: this action only runs the published CLI and
+    # hands its SARIF to GitHub. All analysis lives in the engine, not here.
+    - name: Install the OpenThunder CLI
+      shell: bash
+      env:
+        OT_CLI_VERSION: ${{ inputs.cli-version }}
+        OT_LOCAL_CLI: ${{ inputs.local-cli }}
+      run: |
+        if [ -n "$OT_LOCAL_CLI" ]; then
+          # Dogfood from source: a tiny `openthunder` shim on PATH that runs the built entry, so every
+          # step below works unchanged. The path must exist and stay inside the workspace.
+          ENTRY="$(cd "$(dirname "$OT_LOCAL_CLI")" && pwd)/$(basename "$OT_LOCAL_CLI")"
+          case "$ENTRY" in "$GITHUB_WORKSPACE"/*) ;; *) echo "::error::local-cli must be inside the workspace."; exit 1;; esac
+          [ -f "$ENTRY" ] || { echo "::error::local-cli not found: $OT_LOCAL_CLI (build the CLI first)."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/openthunder-bin"
+          printf '#!/bin/sh\nexec node "%s" "$@"\n' "$ENTRY" > "$RUNNER_TEMP/openthunder-bin/openthunder"
+          chmod +x "$RUNNER_TEMP/openthunder-bin/openthunder"
+          echo "$RUNNER_TEMP/openthunder-bin" >> "$GITHUB_PATH"
+          echo "Using the locally built CLI at $ENTRY"
+          exit 0
+        fi
+        # A version only: anything else could be an npm spec that installs a different package.
+        if ! [[ "$OT_CLI_VERSION" =~ ^(latest|next|[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$ ]]; then
+          echo "::error::cli-version must be a version like 0.7.0, or latest."; exit 1
+        fi
+        npm install -g "@skillstech/openthunder@$OT_CLI_VERSION"
+
+    - name: Pull org Rules from OpenThunder Cloud
+      if: ${{ inputs.org-rules == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OPENTHUNDER_TOKEN: ${{ inputs.openthunder-token }}
+        OPENTHUNDER_CLOUD_URL: ${{ inputs.cloud-url }}
+      run: |
+        if [ -z "$OPENTHUNDER_TOKEN" ]; then echo "::error::org-rules needs openthunder-token (pass secrets.OPENTHUNDER_TOKEN)."; exit 1; fi
+        [ -z "$OPENTHUNDER_CLOUD_URL" ] && unset OPENTHUNDER_CLOUD_URL
+        # Fail rather than silently checking without the org's Rules.
+        openthunder cloud rules pull --github-env
+
+    - name: Verify changes to SARIF
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OT_BASE: ${{ inputs.base }}
+        OT_BASE_REF: ${{ github.base_ref }}
+        OT_OUTPUT: ${{ inputs.output }}
+        OT_MODE: ${{ inputs.mode }}
+      run: |
+        BASE="$OT_BASE"
+        if [ -z "$BASE" ]; then BASE="$OT_BASE_REF"; fi
+        if [ -z "$BASE" ]; then BASE="main"; fi
+        git fetch --no-tags origin "$BASE" >/dev/null 2>&1 || true
+        [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] && { git fetch --no-tags --unshallow origin >/dev/null 2>&1 || true; }
+        OUT="$OT_OUTPUT"
+        # Resilient across CLI versions: use review-pr --sarif on current CLIs; fall back to
+        # `scan --format sarif` on a published CLI that predates review-pr's --sarif flag; and
+        # write a minimal valid SARIF as a last resort, so this advisory step never hard-fails
+        # on a version mismatch (which is exactly what broke the self-review check).
+        set +e
+        if [ "$OT_MODE" = "scan" ]; then
+          openthunder scan --all --since "$BASE" --format sarif --output "$OUT"
+        else
+          openthunder review-pr --base "$BASE" --sarif > "$OUT" 2>/dev/null \
+            || openthunder scan --all --since "$BASE" --format sarif --output "$OUT"
+        fi
+        if [ ! -s "$OUT" ]; then
+          printf '%s' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"OpenThunder","informationUri":"https://openthunder.dev","rules":[]}},"results":[]}]}' > "$OUT"
+        fi
+        set -e
+
+    - name: Read the ship verdict
+      id: verdict
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OT_OUTPUT: ${{ inputs.output }}
+      run: |
+        OT=$(node -e "try{const s=require(require('path').resolve(process.env.OT_OUTPUT));const p=s.runs?.[0]?.properties?.openthunder||{};console.log((p.verificationState||'unknown')+'\t'+(p.residualRisk??''))}catch(e){console.log('unknown\t')}")
+        echo "verdict=$(echo "$OT" | cut -f1)" >> "$GITHUB_OUTPUT"
+        echo "residual=$(echo "$OT" | cut -f2)" >> "$GITHUB_OUTPUT"
+        echo "OpenThunder verdict: $(echo "$OT" | cut -f1) (residual risk $(echo "$OT" | cut -f2)/100)"
+
+    - name: Upload SARIF to GitHub code scanning
+      if: ${{ inputs.upload == 'true' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.working-directory }}/${{ inputs.output }}
+
+    # Verified AI Change gate (opt-in via require-verified-change, RECOMMENDED ON): a real
+    # merge-blocking check. Ship-eligible means: trust-gated tests pass (secret-scrubbed env),
+    # no NEW security risk vs the baseline (pre-existing findings never block a clean change),
+    # the deterministic change verdict accepts, and every policy-required human approval is
+    # already recorded in the tamper-evident evidence ledger. Honesty: the test run is a
+    # trust-gated CI process, not an isolated sandbox. --trust-toolchain is the explicit CI
+    # consent to run the repo's reviewed, fingerprint-pinned test command set.
+    - name: Verified AI Change gate
+      id: verified-change
+      if: ${{ inputs.require-verified-change == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OT_BASE: ${{ inputs.base }}
+        OT_BASE_REF: ${{ github.base_ref }}
+      run: |
+        BASE="$OT_BASE"; [ -z "$BASE" ] && BASE="$OT_BASE_REF"; [ -z "$BASE" ] && BASE="main"
+        # Shallow CI checkouts often lack the base branch and the shared history a diff needs. Fetch them;
+        # if that still fails, OpenThunder reports "nothing was checked" instead of guessing.
+        git fetch --no-tags origin "$BASE" >/dev/null 2>&1 || true
+        [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] && { git fetch --no-tags --unshallow origin >/dev/null 2>&1 || true; }
+        BASEREF="origin/$BASE"; git rev-parse --verify "$BASEREF" >/dev/null 2>&1 || BASEREF="$BASE"
+        set +e
+        openthunder verify-change --base "$BASEREF" --trust-toolchain --json > verified-change.json
+        set -e
+        ELIGIBLE=$(node -e "try{console.log(require('./verified-change.json').shipEligible===true?'true':'false')}catch(e){console.log('false')}")
+        echo "ship-eligible=$ELIGIBLE" >> "$GITHUB_OUTPUT"
+        node -e "try{const r=require('./verified-change.json');console.log('Verified AI Change: '+(r.shipEligible?'SHIP-ELIGIBLE':'NOT ELIGIBLE'));for(const b of r.blockers||[])console.log('  blocker: '+b)}catch(e){console.log('verify-change produced no record')}"
+        if [ "$ELIGIBLE" != "true" ]; then
+          echo "::error::Verified AI Change gate: this change is NOT ship-eligible. Fix the blockers or record the required approvals with 'openthunder verify-change approve --justification ...'."
+          exit 1
+        fi
+
+    # The human-facing touchpoint + the public-repo billboard (Bet 2): a change-scoped Change Pack
+    # posted as ONE genuinely idempotent PR comment. Idempotency is by a hidden marker , the exact
+    # prior OpenThunder comment is found and edited in place, so interleaved comments from people or
+    # other bots never cause a duplicate (this is stronger than --edit-last, which just edits whatever
+    # commented most recently). The pack is ALSO written to the job summary, so the verdict is always
+    # visible in the run , including on fork PRs, where the token is read-only and no comment is
+    # possible. Deterministic + keyless. Advisory by default; commenting is best-effort and never fails
+    # this step (a read-only fork token must not turn the billboard into a red check).
+    # The OpenThunder Check: one answer for this PR (Ready to merge / Needs review / Blocked), written
+    # as the PR comment. Gating happens in the LAST step, after the comment is posted, so people
+    # always see why a check failed. Older CLIs without pr-check fall back to the Change Pack comment.
+    - name: OpenThunder Check (one answer)
+      id: gate
+      if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OT_BASE: ${{ inputs.base }}
+        OT_BASE_REF: ${{ github.base_ref }}
+        OT_SHARE_PROOF: ${{ inputs.share-proof }}
+        OT_GATE: ${{ inputs.gate }}
+        OT_PR: ${{ github.event.pull_request.number }}
+        OT_REPO: ${{ github.repository }}
+        OT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        OT_RUN_TESTS: ${{ inputs.run-impacted-tests }}
+        OT_SENSITIVITY: ${{ inputs.test-sensitivity }}
+        OT_SEE_IT_RUN: ${{ inputs.see-it-run }}
+        GH_TOKEN: ${{ github.token }}
+        OPENTHUNDER_TOKEN: ${{ inputs.share-proof == 'true' && inputs.openthunder-token || '' }}
+        OPENTHUNDER_CLOUD_URL: ${{ inputs.cloud-url }}
+      run: |
+        BASE="$OT_BASE"; [ -z "$BASE" ] && BASE="$OT_BASE_REF"; [ -z "$BASE" ] && BASE="main"
+        # Shallow CI checkouts often lack the base branch and the shared history a diff needs. Fetch them;
+        # if that still fails, OpenThunder reports "nothing was checked" instead of guessing.
+        git fetch --no-tags origin "$BASE" >/dev/null 2>&1 || true
+        [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] && { git fetch --no-tags --unshallow origin >/dev/null 2>&1 || true; }
+        BASEREF="origin/$BASE"; git rev-parse --verify "$BASEREF" >/dev/null 2>&1 || BASEREF="$BASE"
+        [ -z "$OPENTHUNDER_CLOUD_URL" ] && unset OPENTHUNDER_CLOUD_URL
+        # Older CLIs print the general help for an unknown command (exit 0), so look for pr-check in the command list.
+        if ! openthunder --help 2>/dev/null | grep -qE '^\s+pr-check\b'; then
+          echo "::notice::This OpenThunder CLI version has no pr-check; showing the Change Pack only. Set cli-version to a newer release to get the one-answer Check and the merge gate."
+          exit 0
+        fi
+        set +e
+        openthunder intent change-pack --base "$BASEREF" > pack.md 2>/dev/null
+        SHARE=""; [ "$OT_SHARE_PROOF" = "true" ] && SHARE="--share"
+        # The fix loop: the previous OpenThunder comment carries this PR's rounds (one per checked commit).
+        # Pass it back so the new comment says "Round N" and measures rounds to green; a read failure
+        # (fork PR, no comment yet) simply starts at round 1. Only on CLIs that have the fix list.
+        HANDOFF=""
+        if openthunder pr-check --help 2>/dev/null | grep -q -- '--fix-list'; then
+          HANDOFF="--fix-list openthunder-fix-list.json --head $OT_HEAD_SHA"
+          if [ "$OT_RUN_TESTS" = "true" ] && openthunder pr-check --help 2>/dev/null | grep -q -- '--run-tests'; then
+            HANDOFF="$HANDOFF --run-tests --trust-toolchain"
+            if [ "$OT_SENSITIVITY" = "true" ] && openthunder pr-check --help 2>/dev/null | grep -q -- '--test-sensitivity'; then
+              HANDOFF="$HANDOFF --test-sensitivity"
+            fi
+          fi
+          # See it run: the app on the base and on the PR, the same requests to both. Only on CLIs that have it.
+          if [ "$OT_SEE_IT_RUN" = "true" ] && openthunder pr-check --help 2>/dev/null | grep -q -- '--see-it-run'; then
+            HANDOFF="$HANDOFF --see-it-run --trust-toolchain"
+          fi
+          if [ -n "$OT_PR" ]; then
+            gh api --paginate "repos/$OT_REPO/issues/$OT_PR/comments" \
+              --jq '[.[] | select(.body | contains("<!-- openthunder-change-pack -->"))] | .[0].body // empty' > ot-previous.md 2>/dev/null || true
+            [ -s ot-previous.md ] && HANDOFF="$HANDOFF --previous ot-previous.md"
+          fi
+        fi
+        # A change to the team Rules is cleared only by an admin approval GitHub recorded on this PR's head
+        # commit (an approving review, or the admin's approve-rules comment). pr-check reads it with gh.
+        if [ -n "$OT_PR" ] && openthunder pr-check --help 2>/dev/null | grep -q -- '--github-repo'; then
+          HANDOFF="$HANDOFF --pr $OT_PR --github-repo $OT_REPO"
+          echo "$HANDOFF" | grep -q -- '--head' || HANDOFF="$HANDOFF --head $OT_HEAD_SHA"
+        fi
+        openthunder pr-check --base "$BASEREF" --mode "$OT_GATE" --change-pack pack.md --out ot-check.md $SHARE $HANDOFF
+        GATE_EXIT=$?
+        if [ -s openthunder-fix-list.json ]; then
+          node -e "const r=require('./openthunder-fix-list.json');const c=r.fixList.counts;console.log('OpenThunder fix list: '+c.blocking+' blocking, '+c.review+' for a person or a look; round '+r.rounds.rounds.length+(r.roundsToGreen?', green at round '+r.roundsToGreen:''))" || true
+          echo "fix-list=openthunder-fix-list.json" >> "$GITHUB_OUTPUT"
+          node -e "const r=require('./openthunder-fix-list.json');console.log('rounds='+r.rounds.rounds.length)" >> "$GITHUB_OUTPUT" 2>/dev/null || true
+        fi
+        if [ ! -s ot-check.md ]; then
+          echo "::notice::OpenThunder Check produced no result (exit $GATE_EXIT); showing the Change Pack only. This never blocks the merge."
+          exit 0
+        fi
+        KIND=$(grep -o 'OpenThunder Check: [A-Za-z ]*' ot-check.md | head -1 | sed 's/OpenThunder Check: //; s/Ready to merge/ready/; s/Needs review/review/; s/Blocked/blocked/' || true)
+        set -e
+        echo "check=$KIND" >> "$GITHUB_OUTPUT"
+        echo "exit=$GATE_EXIT" >> "$GITHUB_OUTPUT"
+
+    # The check's record travels with the run: the comment markdown and the fix list JSON, so an agent
+    # or a person can fetch the handoff even when the comment could not be posted (fork PRs).
+    - name: Keep the check record with the run
+      if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: openthunder-check
+        path: |
+          ${{ inputs.working-directory }}/ot-check.md
+          ${{ inputs.working-directory }}/openthunder-fix-list.json
+          ${{ inputs.working-directory }}/.openthunder/see-it-run/
+        if-no-files-found: ignore
+        retention-days: 30
+
+    - name: Change Pack PR comment + billboard
+      if: ${{ inputs.pr-comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        OT_BASE: ${{ inputs.base }}
+        OT_BASE_REF: ${{ github.base_ref }}
+        OT_PR: ${{ github.event.pull_request.number }}
+        OT_REPO: ${{ github.repository }}
+        OT_FAIL_ON_HOLD: ${{ inputs.fail-on-hold }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        BASE="$OT_BASE"; [ -z "$BASE" ] && BASE="$OT_BASE_REF"; [ -z "$BASE" ] && BASE="main"
+        # Shallow CI checkouts often lack the base branch and the shared history a diff needs. Fetch them;
+        # if that still fails, OpenThunder reports "nothing was checked" instead of guessing.
+        git fetch --no-tags origin "$BASE" >/dev/null 2>&1 || true
+        [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] && { git fetch --no-tags --unshallow origin >/dev/null 2>&1 || true; }
+        BASEREF="origin/$BASE"; git rev-parse --verify "$BASEREF" >/dev/null 2>&1 || BASEREF="$BASE"
+        set +e
+        openthunder intent change-pack --base "$BASEREF" > pack.md
+        PACK_EXIT=$?
+        set -e
+        [ -s pack.md ] || echo "OpenThunder could not build a Change Pack for this diff." > pack.md
+        MARKER="<!-- openthunder-change-pack -->"
+        if [ -s ot-check.md ]; then
+          # The one-answer Check (with the Change Pack folded in) replaces the old comment in place.
+          cp ot-check.md ot-comment.md
+        else
+          {
+            echo "$MARKER"
+            echo "### OpenThunder Check: what this change touches"
+            echo ""
+            cat pack.md
+            echo ""
+            echo "_Deterministic + keyless · every claim grounded in code · [Check your own repo free](https://openthunder.dev)_"
+          } > ot-comment.md
+        fi
+        # Always surface the pack in the Actions run summary , visible even when we cannot comment.
+        [ -n "$GITHUB_STEP_SUMMARY" ] && cat ot-comment.md >> "$GITHUB_STEP_SUMMARY" || true
+        # Post/update the ONE marked comment. Best-effort: never fail this advisory step (fork PRs
+        # have a read-only token and cannot comment , the summary above still carries the verdict).
+        PR="$OT_PR"
+        REPO="$OT_REPO"
+        if [ -n "$PR" ]; then
+          set +e
+          CID=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" 2>/dev/null | head -1)
+          if [ -n "$CID" ] && [ "$CID" != "null" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$CID" -F body=@ot-comment.md >/dev/null 2>&1 \
+              || echo "::notice::OpenThunder could not update its PR comment (read-only token?); the verdict is in the run summary."
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@ot-comment.md >/dev/null 2>&1 \
+              || echo "::notice::OpenThunder could not post a PR comment (read-only token on a fork PR?); the verdict is in the run summary."
+          fi
+          set -e
+        fi
+        if [ "$PACK_EXIT" != "0" ] && [ "$OT_FAIL_ON_HOLD" = "true" ]; then
+          echo "::error::OpenThunder Change Pack verdict is HOLD , this change drifts from approved intent or removes a capability."
+          exit 1
+        fi
+
+    # The merge gate: fail AFTER the comment is posted, so the PR always shows why.
+    - name: Enforce the merge gate
+      if: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && inputs.gate != 'report' && steps.gate.outputs.exit == '1' }}
+      shell: bash
+      env:
+        OT_CHECK: ${{ steps.gate.outputs.check }}
+      run: |
+        echo "::error::OpenThunder Check: $OT_CHECK. See the PR comment for the reason and the next step."
+        exit 1
