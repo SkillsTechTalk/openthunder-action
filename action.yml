@@ -1,5 +1,5 @@
 name: 'OpenThunder for GitHub'
-description: 'One answer for every pull request: Ready to merge, Needs review, or Blocked, with the reason, the next step, and the fix list. Keyless.'
+description: 'One answer for every pull request: Ready to merge, Needs review, or Blocked, with the reason and the fix list.'
 author: 'Skills Tech Talk, LLC'
 branding:
   icon: 'shield'
