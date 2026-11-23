@@ -1,0 +1,16 @@
+# The typical Definition of Done (OpenThunder for GitHub).
+# Used only when your repository has no .openthunder/done.yml on its base branch.
+# To change it, copy this file to .openthunder/done.yml, adjust it, and merge it.
+version: 1
+trust: any
+approvers: []               # who may approve an exception (GitHub usernames)
+require:
+  - check: openthunder.tests-not-weakened    # no test was changed to prove less
+  - check: openthunder.no-security-findings  # no security finding on the changed lines
+  - check: openthunder.contracts-intact      # nothing still calls what this change removed
+  - check: openthunder.person-approval       # a person approves changes to security-sensitive files
+recommend:
+  - check: openthunder.new-code-has-tests    # changed code comes with tests
+  - check: openthunder.impacted-tests        # the related tests ran and passed (needs run-impacted-tests: true)
+  - coverage: { min: 80, of: changed }       # needs a coverage report (lcov) in the workspace
+  - check: openthunder.ai-behavior-evaluated # prompt, model, or tool changes are covered by an eval

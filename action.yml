@@ -62,6 +62,14 @@ inputs:
       protection to enforce it. Start with report to see what it would do.
     required: false
     default: 'report'
+  definition-of-done:
+    description: >-
+      typical (default): when the repository has no .openthunder/done.yml on its base branch, check each pull
+      request against a typical Definition of Done (tests not weakened, no security finding on the changed lines,
+      callers still work, a person approves security-sensitive changes). Your own .openthunder/done.yml always
+      takes its place. none: only your own file, if any.
+    required: false
+    default: 'typical'
   run-impacted-tests:
     description: >-
       Run the impacted tests inside the Check (only the test files related to the changed code; the
@@ -281,6 +289,8 @@ runs:
         OT_RUN_TESTS: ${{ inputs.run-impacted-tests }}
         OT_SENSITIVITY: ${{ inputs.test-sensitivity }}
         OT_SEE_IT_RUN: ${{ inputs.see-it-run }}
+        OT_DONE: ${{ inputs.definition-of-done }}
+        OT_ACTION_PATH: ${{ github.action_path }}
         GH_TOKEN: ${{ github.token }}
         OPENTHUNDER_TOKEN: ${{ inputs.share-proof == 'true' && inputs.openthunder-token || '' }}
         OPENTHUNDER_CLOUD_URL: ${{ inputs.cloud-url }}
@@ -292,6 +302,12 @@ runs:
         [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] && { git fetch --no-tags --unshallow origin >/dev/null 2>&1 || true; }
         BASEREF="origin/$BASE"; git rev-parse --verify "$BASEREF" >/dev/null 2>&1 || BASEREF="$BASE"
         [ -z "$OPENTHUNDER_CLOUD_URL" ] && unset OPENTHUNDER_CLOUD_URL
+        # The typical Definition of Done, only when the repository has none of its own on the base branch.
+        if [ "$OT_DONE" = "typical" ] && ! git cat-file -e "$BASEREF:.openthunder/done.yml" 2>/dev/null; then
+          DOD="typical.yml"; [ "$OT_RUN_TESTS" = "true" ] && DOD="typical-with-tests.yml"
+          export OPENTHUNDER_DONE_FILE="$OT_ACTION_PATH/definition-of-done/$DOD"
+          export OPENTHUNDER_DONE_LABEL="the typical Definition of Done (add .openthunder/done.yml to use your own)"
+        fi
         # Older CLIs print the general help for an unknown command (exit 0), so look for pr-check in the command list.
         if ! openthunder --help 2>/dev/null | grep -qE '^\s+pr-check\b'; then
           echo "::notice::This OpenThunder CLI version has no pr-check; showing the Change Pack only. Set cli-version to a newer release to get the one-answer Check and the merge gate."

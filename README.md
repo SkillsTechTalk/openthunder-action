@@ -39,8 +39,63 @@ jobs:
 - **The same answer in the job summary**, so it is visible even when a comment cannot be posted
   (pull requests from forks).
 - **Findings in Code scanning** (SARIF), on the lines they are about.
-- **Your Definition of Done.** If the repository has `.openthunder/done.yml`, each required item is
-  decided from evidence for this exact change, and an open item keeps the answer at Needs review.
+- **A Definition of Done on every pull request**, decided from evidence for that exact change (see below).
+
+## Definition of Done
+
+Every pull request is checked against a Definition of Done: what your team requires before a change
+is done. Each item is decided from evidence for that exact change (never a ticked checklist):
+**Passed**, **Failed**, **Not checked**, **Outdated**, **Not applicable**, or **Exception approved**.
+
+**Out of the box** (`definition-of-done: typical`, the default), a repository without its own file
+gets this typical one:
+
+| Required | What it means |
+|---|---|
+| No test weakened | No test was changed to prove less |
+| No security finding on the changed lines | OpenThunder's scan of the lines this PR changes |
+| Callers still work | Nothing still calls what the change removed or renamed |
+| A person approved protected changes | Security-sensitive files (auth, payments, secrets) get a person's review |
+| Nothing blocks the change, nothing waits for a person | Always part of it: the Check's own answer |
+
+| Recommended (shown, never holds a change) | |
+|---|---|
+| Changed code has tests | Source changed with a test changed alongside |
+| Impacted tests ran and passed | Required instead when `run-impacted-tests: true` |
+| Changed lines covered (at least 80%) | Needs a coverage report (lcov) from your test step |
+| AI behavior change evaluated | Prompt, model, or tool changes are covered by an eval |
+
+**Make it yours:** add `.openthunder/done.yml` to your default branch. It replaces the typical one,
+and it is read from the base branch, so a pull request cannot change the rules that judge it.
+Start from this:
+
+```yaml
+version: 1
+approvers: [your-github-username]   # who may approve an exception
+require:
+  - check: openthunder.impacted-tests        # with run-impacted-tests: true
+  - check: openthunder.tests-not-weakened
+  - check: openthunder.no-security-findings
+  - check: openthunder.contracts-intact
+  - check: openthunder.person-approval
+  - coverage: { min: 80, of: changed }       # needs an lcov report in the workspace
+recommend:
+  - check: openthunder.new-code-has-tests
+  - check: openthunder.ai-behavior-evaluated
+```
+
+An accepted risk is an exception with a person and an end date; the evidence underneath stays visible:
+
+```yaml
+exceptions:
+  - requirement: coverage
+    reason: "Legacy module; tests land in the follow-up"
+    approver: your-github-username
+    expires: 2026-12-31
+```
+
+With `gate: require-ready`, an open required item fails the check, so the Definition of Done becomes
+a merge gate. Set `definition-of-done: none` to use only your own file.
 
 ## Enforcing it
 
@@ -59,6 +114,7 @@ who reviewed a Needs review change can approve that exact commit with a comment:
 | Input | Default | What it does |
 |---|---|---|
 | `gate` | `report` | See above. |
+| `definition-of-done` | `typical` | `typical`: the typical Definition of Done when the repository has no `.openthunder/done.yml`. `none`: only your own file. |
 | `base` | the PR base branch | The branch to compare with. |
 | `run-impacted-tests` | `false` | Also run the tests related to the change. This runs your repository's own test commands: turn it on only for repositories you trust. |
 | `see-it-run` | `false` | Start the app on the base and on the PR, replay the affected routes (GET/HEAD), and report what changed. |

@@ -1,0 +1,16 @@
+# The typical Definition of Done when run-impacted-tests is on (OpenThunder for GitHub).
+# Used only when your repository has no .openthunder/done.yml on its base branch.
+version: 1
+trust: any
+approvers: []
+require:
+  - check: openthunder.impacted-tests        # the tests related to the change ran and passed
+  - check: openthunder.tests-not-weakened
+  - check: openthunder.no-security-findings
+  - check: openthunder.contracts-intact
+  - check: openthunder.person-approval
+recommend:
+  - check: openthunder.new-code-has-tests
+  - check: openthunder.test-sensitivity      # the tests notice the change (needs test-sensitivity: true)
+  - coverage: { min: 80, of: changed }
+  - check: openthunder.ai-behavior-evaluated
